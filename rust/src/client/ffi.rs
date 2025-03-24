@@ -31,8 +31,11 @@ fn disconnect(client_id: String) -> nvim_oxi::Result<()> {
     let client_id = Uuid::parse_str(&client_id).unwrap();
 
     let mut registry = WEBSOCKET_CLIENT_REGISTRY.lock();
-    let client = registry.get_mut(&client_id).unwrap();
-    client.disconnect();
+    if let Some(client) = registry.get_mut(&client_id) {
+        client.disconnect();
+        // Remove the client from registry immediately in case of forceful disconnect
+        registry.remove(&client_id);
+    }
     Ok(())
 }
 

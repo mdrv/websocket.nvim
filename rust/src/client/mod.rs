@@ -127,10 +127,14 @@ async fn start_client(
                             Err(err) => {
                                 send_event(WebsocketClientInboundEvent::Error(WebsocketClientError::ReceiveMessageError(err.to_string())));
                                 error!("Failed to receive message: {}", err);
+                                break;
                             }
                         }
                     }
-                    None => (),
+                    None => {
+                        info!("Server closed connection");
+                        break;
+                    },
                 }
             }
             close_event = close_connection_event_subscriber.recv() => {
@@ -165,6 +169,9 @@ async fn start_client(
             }
         }
     }
+
+    drop(ws_sender);
+    drop(ws_receiver);
 
     info!("Closing WebSocket connection. Sending out event - \"Disconnected\"");
     send_event(WebsocketClientInboundEvent::Disconnected);
@@ -249,7 +256,12 @@ impl WebsocketClient {
                     .unwrap_or_else(|err| error!("Failed to send event: {}", err));
             };
 
+            // Ensure cleanup happens
             WEBSOCKET_CLIENT_REGISTRY.lock().remove(&id);
+
+            // Drop channels explicitly
+            drop(inbound_event_publisher_clone);
+            drop(lua_handle_clone);
         });
 
         // Store the handle in the WebsocketClient struct
@@ -265,6 +277,21 @@ impl WebsocketClient {
         })
     }
 
+    // Add a new method to abort the task handle
+    fn abort_task(&self) {
+        self.task_handle.abort();
+    }
+
+    fn disconnect(&mut self) {
+        // First try graceful shutdown
+        if let Err(_) = self.close_connection_event_publisher
+            .send(WebsocketClientCloseConnectionEvent::Graceful) {
+            // If sending fails, force abort the task
+            self.abort_task();
+            self.send_event(WebsocketClientInboundEvent::Disconnected);
+        }
+    }
+
     fn send_event(&self, event: WebsocketClientInboundEvent) {
         self.inbound_event_publisher
             .send(event)
@@ -272,17 +299,6 @@ impl WebsocketClient {
         self.lua_handle
             .send()
             .unwrap_or_else(|err| error!("Failed to send event: {}", err));
-    }
-
-    fn disconnect(&mut self) {
-        self.close_connection_event_publisher
-            .send(WebsocketClientCloseConnectionEvent::Graceful)
-            .unwrap_or_else(move |err| {
-                self.send_event(WebsocketClientInboundEvent::Error(
-                    WebsocketClientError::SendMessageError(err.to_string()),
-                ));
-                ()
-            });
     }
 
     fn send_data(&mut self, data: String) {
